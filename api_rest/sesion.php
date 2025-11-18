@@ -17,8 +17,21 @@ switch ($action) {
     $pass = s($input['password'] ?? '');
     if ($user==='' || $pass==='') j_err('Faltan datos');
 
-    $stmt = $conn->prepare("SELECT IdUsuarios, UsuUser, UsuContra, EstadoUsuario, UsuPersonaId 
-                            FROM usuarios WHERE UsuUser=? LIMIT 1");
+    // Ahora traemos también el rol del usuario
+    $sql = "SELECT 
+                u.IdUsuarios,
+                u.UsuUser,
+                u.UsuContra,
+                u.EstadoUsuario,
+                u.UsuPersonaId,
+                r.RolNom
+            FROM usuarios u
+            LEFT JOIN usuarios_roles ur ON ur.UsuarioId = u.IdUsuarios
+            LEFT JOIN roles r          ON r.IdRol     = ur.RolId
+            WHERE u.UsuUser = ?
+            LIMIT 1";
+
+    $stmt = $conn->prepare($sql);
     $stmt->bind_param("s", $user);
     $stmt->execute();
     $res = $stmt->get_result();
@@ -36,7 +49,8 @@ switch ($action) {
       "user"  => [
         "id"        => (int)$row['IdUsuarios'],
         "username"  => $row['UsuUser'],
-        "personaId" => $row['UsuPersonaId'] ? (int)$row['UsuPersonaId'] : null
+        "personaId" => $row['UsuPersonaId'] ? (int)$row['UsuPersonaId'] : null,
+        "rol"       => $row['RolNom'] ?? null   // <-- IMPORTANTE: rol del usuario
       ]
     ]);
     break;
@@ -54,14 +68,14 @@ switch ($action) {
       j_err('Faltan datos para registro');
     }
 
-    // Verificar si el usuario ya existe
+    // Verificar si el usuario ya existeeeeeeeee
     $stmt = $conn->prepare("SELECT IdUsuarios FROM usuarios WHERE UsuUser = ? LIMIT 1");
     $stmt->bind_param("s", $user);
     $stmt->execute();
     $stmt->store_result();
 
     if ($stmt->num_rows > 0) {
-      j_err('El usuario ya existe', 409);
+      j_err('El usuario ya existee jajaj', 409);
     }
 
     // Insertar nuevo usuario — AJUSTA columnas si tu tabla tiene más
