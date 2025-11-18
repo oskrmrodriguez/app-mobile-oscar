@@ -17,7 +17,7 @@ switch ($action) {
     $pass = s($input['password'] ?? '');
     if ($user === '' || $pass === '') j_err('Faltan datos');
 
-    // Traemos también el rol del usuario
+    // Traemos también el rol del usuario00000000000
     $sql = "SELECT 
                 u.IdUsuarios,
                 u.UsuUser,
