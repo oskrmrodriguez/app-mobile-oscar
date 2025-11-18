@@ -15,7 +15,7 @@ switch ($action) {
   case 'login':
     $user = s($input['username'] ?? '');
     $pass = s($input['password'] ?? '');
-    if ($user==='' || $pass==='') j_err('Faltan datos');
+    if ($user === '' || $pass === '') j_err('Faltan datos');
 
     // Traemos también el rol del usuario
     $sql = "SELECT 
@@ -27,11 +27,14 @@ switch ($action) {
                 r.RolNom
             FROM usuarios u
             LEFT JOIN usuarios_roles ur ON ur.UsuarioId = u.IdUsuarios
-            LEFT JOIN roles r          ON r.IdRol     = ur.RolId
+            LEFT JOIN roles r          ON r.IdRol      = ur.RolId
             WHERE u.UsuUser = ?
             LIMIT 1";
 
     $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        j_err('Error interno al preparar consulta', 500);
+    }
     $stmt->bind_param("s", $user);
     $stmt->execute();
     $res = $stmt->get_result();
@@ -42,9 +45,16 @@ switch ($action) {
     if ($row['EstadoUsuario'] !== 'ACTIVO') j_err('Usuario inactivo', 403);
     if ($pass !== $row['UsuContra']) j_err('Contraseña incorrecta', 401);
 
-    // Rol desde la tabla; si viene null y es el Id 1, lo tratamos como ADMINISTRADOR
+    // Rol desde la tabla; normalizamos y ponemos fallback
     $rol = $row['RolNom'] ?? null;
-    if ($rol === null) {
+    if ($rol !== null) {
+        $rol = trim($rol);
+    }
+
+    // Si no tiene rol, definimos:
+    //  - IdUsuarios = 1 -> ADMINISTRADOR
+    //  - cualquier otro -> USUARIO
+    if ($rol === null || $rol === '') {
         if ((int)$row['IdUsuarios'] === 1) {
             $rol = 'ADMINISTRADOR';
         } else {
@@ -66,21 +76,23 @@ switch ($action) {
     break;
 
 
-
   /* ===========================================
    *  REGISTRO
    * =========================================== */
   case 'register':
     $user  = s($input['username'] ?? '');
     $pass  = s($input['password'] ?? '');
-    $email = s($input['email'] ?? ''); // OPCIONAL — solo si tu tabla lo tiene
+    $email = s($input['email'] ?? ''); // OPCIONAL
 
     if ($user === '' || $pass === '') {
       j_err('Faltan datos para registro');
     }
 
-    // Verificar si el usuario ya existeeeeeeeee
+    // Verificar si el usuario ya existe
     $stmt = $conn->prepare("SELECT IdUsuarios FROM usuarios WHERE UsuUser = ? LIMIT 1");
+    if (!$stmt) {
+        j_err('Error interno al preparar consulta', 500);
+    }
     $stmt->bind_param("s", $user);
     $stmt->execute();
     $stmt->store_result();
@@ -89,11 +101,14 @@ switch ($action) {
       j_err('El usuario ya existee jajaj', 409);
     }
 
-    // Insertar nuevo usuario — AJUSTA columnas si tu tabla tiene más
+    // Insertar nuevo usuario — ajusta columnas si agregas más
     $ins = $conn->prepare(
       "INSERT INTO usuarios (UsuUser, UsuContra, EstadoUsuario) 
        VALUES (?, ?, 'ACTIVO')"
     );
+    if (!$ins) {
+        j_err('Error interno al preparar inserción', 500);
+    }
     $ins->bind_param("ss", $user, $pass);
 
     if ($ins->execute()) {
@@ -113,13 +128,16 @@ switch ($action) {
   case 'recover':
     $user = s($input['username'] ?? '');
     $new  = s($input['new_password'] ?? '');
-    if ($user==='' || $new==='') j_err('Faltan datos');
+    if ($user === '' || $new === '') j_err('Faltan datos');
 
     $upd = $conn->prepare("UPDATE usuarios SET UsuContra=? WHERE UsuUser=?");
+    if (!$upd) {
+        j_err('Error interno al preparar actualización', 500);
+    }
     $upd->bind_param("ss", $new, $user);
     $upd->execute();
 
-    if ($upd->affected_rows > 0) j_ok(["msg"=>"Contraseña actualizada"]);
+    if ($upd->affected_rows > 0) j_ok(["msg" => "Contraseña actualizada"]);
     j_err('Usuario no encontrado', 404);
     break;
 
