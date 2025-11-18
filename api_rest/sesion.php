@@ -17,7 +17,7 @@ switch ($action) {
     $pass = s($input['password'] ?? '');
     if ($user==='' || $pass==='') j_err('Faltan datos');
 
-    // Ahora traemos también el rol del usuario
+    // Traemos también el rol del usuario
     $sql = "SELECT 
                 u.IdUsuarios,
                 u.UsuUser,
@@ -42,6 +42,16 @@ switch ($action) {
     if ($row['EstadoUsuario'] !== 'ACTIVO') j_err('Usuario inactivo', 403);
     if ($pass !== $row['UsuContra']) j_err('Contraseña incorrecta', 401);
 
+    // Rol desde la tabla; si viene null y es el Id 1, lo tratamos como ADMINISTRADOR
+    $rol = $row['RolNom'] ?? null;
+    if ($rol === null) {
+        if ((int)$row['IdUsuarios'] === 1) {
+            $rol = 'ADMINISTRADOR';
+        } else {
+            $rol = 'USUARIO';
+        }
+    }
+
     $token = base64_encode($row['IdUsuarios'].'|'.time());
 
     j_ok([
@@ -50,10 +60,11 @@ switch ($action) {
         "id"        => (int)$row['IdUsuarios'],
         "username"  => $row['UsuUser'],
         "personaId" => $row['UsuPersonaId'] ? (int)$row['UsuPersonaId'] : null,
-        "rol"       => $row['RolNom'] ?? null   // <-- IMPORTANTE: rol del usuario
+        "rol"       => $rol
       ]
     ]);
     break;
+
 
 
   /* ===========================================
