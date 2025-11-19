@@ -28,22 +28,26 @@ switch ($action) {
      * =========================================== */
     case 'list':
         $sql = "SELECT 
-                    IdPersona AS id,
-                    PerNom    AS nombres,
-                    PerApe    AS apellidos,
-                    PerDoc    AS documento,
-                    PerFecReg AS fecha
+                    IdPersona    AS id,
+                    PerNom       AS nombres,
+                    PerApe       AS apellidos,
+                    PerNumDoc    AS documento,
+                    PerFechareg  AS fecha
                 FROM personas
                 ORDER BY IdPersona DESC";
 
         $res = $conn->query($sql);
+        if (!$res) {
+            j_err("Error en consulta: " . $conn->error, 500);
+        }
 
         $list = [];
         while ($row = $res->fetch_assoc()) {
             $list[] = $row;
         }
 
-        echo json_encode($list);
+        // IMPORTANTE: la app espera UN ARRAY, no {ok:true, data:[]}
+        echo json_encode($list, JSON_UNESCAPED_UNICODE);
         exit;
 
     /* ===========================================
@@ -54,18 +58,20 @@ switch ($action) {
         $apellidos = s($input['apellidos'] ?? '');
         $documento = s($input['documento'] ?? '');
         $fecha     = s($input['fecha'] ?? date("Y-m-d"));
+        $hora      = date("H:i:s");
 
         if ($nombres === '' || $apellidos === '' || $documento === '') {
             j_err("Todos los campos son obligatorios");
         }
 
+        // Ajustado a columnas reales
         $stmt = $conn->prepare(
-            "INSERT INTO personas (PerNom, PerApe, PerDoc, PerFecReg)
-             VALUES (?, ?, ?, ?)"
+            "INSERT INTO personas (PerNom, PerApe, PerNumDoc, PerFechareg, PerHorareg, EstadoPersona)
+             VALUES (?, ?, ?, ?, ?, 'ACTIVO')"
         );
-        if (!$stmt) j_err("Error en prepare()", 500);
+        if (!$stmt) j_err("Error en prepare(): " . $conn->error, 500);
 
-        $stmt->bind_param("ssss", $nombres, $apellidos, $documento, $fecha);
+        $stmt->bind_param("sssss", $nombres, $apellidos, $documento, $fecha, $hora);
 
         if ($stmt->execute()) {
             j_ok(["msg" => "Persona creada", "id" => $stmt->insert_id]);
@@ -87,10 +93,10 @@ switch ($action) {
 
         $stmt = $conn->prepare(
             "UPDATE personas 
-             SET PerNom=?, PerApe=?, PerDoc=?, PerFecReg=?
-             WHERE IdPersona=?"
+             SET PerNom = ?, PerApe = ?, PerNumDoc = ?, PerFechareg = ?
+             WHERE IdPersona = ?"
         );
-        if (!$stmt) j_err("Error en prepare()", 500);
+        if (!$stmt) j_err("Error en prepare(): " . $conn->error, 500);
 
         $stmt->bind_param("ssssi", $nombres, $apellidos, $documento, $fecha, $id);
         $stmt->execute();
@@ -108,8 +114,8 @@ switch ($action) {
     case 'delete':
         if ($id === 0) j_err("ID inválido");
 
-        $stmt = $conn->prepare("DELETE FROM personas WHERE IdPersona=?");
-        if (!$stmt) j_err("Error prepare()", 500);
+        $stmt = $conn->prepare("DELETE FROM personas WHERE IdPersona = ?");
+        if (!$stmt) j_err("Error en prepare(): " . $conn->error, 500);
 
         $stmt->bind_param("i", $id);
         $stmt->execute();
@@ -118,11 +124,11 @@ switch ($action) {
             j_ok(["msg" => "Persona eliminada"]);
         }
 
-        j_err("No se pudo eliminar", 500);
+        j_err("No se pudo eliminar persona", 500);
         break;
 
     /* ===========================================
-     * ACCIÓN DESCONOCIDA
+     * DEFAULT
      * =========================================== */
     default:
         j_err("Acción no soportada. Usa: list | create | update | delete", 404);
