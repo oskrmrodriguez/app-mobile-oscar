@@ -10,9 +10,7 @@ if (!is_array($input)) $input = $_POST;
 
 function s($v){ return trim((string)($v ?? '')); }
 
-// OJO: aquí asumo que j_ok y j_err ya están definidos en conexion_db.php.
-// Si no, puedes copiar estas versiones:
-//
+// Si no las tienes ya en conexion_db.php, descomenta estas:
 // function j_ok($data = []) {
 //     echo json_encode(["ok"=>true] + $data);
 //     exit;
@@ -86,7 +84,7 @@ switch ($action) {
 
 
   /* ===========================================
-   *  REGISTRO
+   *  REGISTRO (usuario + persona vinculada)
    * =========================================== */
   case 'register':
     $user  = s($input['username'] ?? '');
@@ -97,9 +95,11 @@ switch ($action) {
       j_err('Faltan datos para registro');
     }
 
+    // 1) Verificar si el usuario ya existe
     $stmt = $conn->prepare("SELECT IdUsuarios FROM usuarios WHERE UsuUser = ? LIMIT 1");
-    if (!$stmt) j_err('Error interno al preparar consulta', 500);
-
+    if (!$stmt) {
+        j_err('Error interno al preparar consulta', 500);
+    }
     $stmt->bind_param("s", $user);
     $stmt->execute();
     $stmt->store_result();
@@ -108,22 +108,59 @@ switch ($action) {
       j_err('El usuario ya existee jajaj', 409);
     }
 
+    // 2) Insertar el usuario
     $ins = $conn->prepare(
       "INSERT INTO usuarios (UsuUser, UsuContra, EstadoUsuario) 
        VALUES (?, ?, 'ACTIVO')"
     );
-    if (!$ins) j_err('Error interno al preparar inserción', 500);
-
+    if (!$ins) {
+        j_err('Error interno al preparar inserción', 500);
+    }
     $ins->bind_param("ss", $user, $pass);
 
-    if ($ins->execute()) {
-      j_ok([
-        "msg" => "Usuario registrado correctamente",
-        "id"  => $ins->insert_id
-      ]);
+    if (!$ins->execute()) {
+        j_err('No se pudo registrar el usuario', 500);
     }
 
-    j_err('No se pudo registrar el usuario', 500);
+    $idUsuario = $ins->insert_id;
+
+    // 3) Crear registro en PERSONAS asociado
+    // Por ahora usamos el username como nombre, y dejamos apellidos/doc vacíos.
+    $fecha = date("Y-m-d");
+    $hora  = date("H:i:s");
+    $nomPersona  = $user;
+    $apePersona  = '';
+    $docPersona  = '';
+
+    $pstmt = $conn->prepare(
+        "INSERT INTO personas (PerNom, PerApe, PerNumDoc, PerFechareg, PerHorareg, EstadoPersona)
+         VALUES (?, ?, ?, ?, ?, 'ACTIVO')"
+    );
+    if (!$pstmt) {
+        j_err('Error interno al crear persona', 500);
+    }
+    $pstmt->bind_param("sssss", $nomPersona, $apePersona, $docPersona, $fecha, $hora);
+
+    if (!$pstmt->execute()) {
+        j_err('Usuario creado, pero error creando persona', 500);
+    }
+
+    $idPersona = $pstmt->insert_id;
+
+    // 4) Actualizar el usuario con el IdPersona
+    $upd = $conn->prepare(
+        "UPDATE usuarios SET UsuPersonaId = ? WHERE IdUsuarios = ?"
+    );
+    if ($upd) {
+        $upd->bind_param("ii", $idPersona, $idUsuario);
+        $upd->execute();
+    }
+
+    j_ok([
+      "msg"        => "Usuario y persona registrados correctamente",
+      "idUsuario"  => $idUsuario,
+      "idPersona"  => $idPersona
+    ]);
     break;
 
 
@@ -136,8 +173,9 @@ switch ($action) {
     if ($user === '' || $new === '') j_err('Faltan datos');
 
     $upd = $conn->prepare("UPDATE usuarios SET UsuContra=? WHERE UsuUser=?");
-    if (!$upd) j_err('Error interno al preparar actualización', 500);
-
+    if (!$upd) {
+        j_err('Error interno al preparar actualización', 500);
+    }
     $upd->bind_param("ss", $new, $user);
     $upd->execute();
 
@@ -169,7 +207,6 @@ switch ($action) {
             $list[] = $row;
         }
 
-        // La app espera un ARRAY puro
         echo json_encode($list, JSON_UNESCAPED_UNICODE);
         exit;
 
@@ -248,7 +285,6 @@ switch ($action) {
 
         j_err("No se pudo eliminar persona", 500);
         break;
-
 
   /* ===========================================
    *  DEFAULT
