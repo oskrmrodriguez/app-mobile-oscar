@@ -5,217 +5,290 @@ header('Content-Type: application/json; charset=utf-8');
 
 $action = $_GET['action'] ?? '';
 $id     = isset($_GET['id']) ? intval($_GET['id']) : 0;
-
 $input  = json_decode(file_get_contents('php://input'), true);
 if (!is_array($input)) $input = $_POST;
 
 function s($v){ return trim((string)($v ?? '')); }
 
-function j_ok($data = []) {
-    echo json_encode(["ok"=>true] + $data);
-    exit;
-}
-
-function j_err($msg, $code = 400) {
-    http_response_code($code);
-    echo json_encode(["ok"=>false, "error"=>$msg]);
-    exit;
-}
+// function j_ok($data = []) {
+//     echo json_encode(["ok"=>true] + $data);
+//     exit;
+// }
+//
+// function j_err($msg, $code=400) {
+//     http_response_code($code);
+//     echo json_encode(["ok"=>false,"error"=>$msg]);
+//     exit;
+// }
 
 switch ($action) {
 
-    /* ============================================
-     * LOGIN
-     * ============================================ */
-    case 'login':
-        $user = s($input['username'] ?? '');
-        $pass = s($input['password'] ?? '');
+  /* ===========================================
+   *  LOGIN
+   * =========================================== */
+  case 'login':
+    $user = s($input['username'] ?? '');
+    $pass = s($input['password'] ?? '');
+    if ($user === '' || $pass === '') j_err('Faltan datos');
 
-        if ($user==='' || $pass==='') j_err('Faltan datos');
+    $sql = "SELECT 
+                u.IdUsuarios,
+                u.UsuUser,
+                u.UsuContra,
+                u.EstadoUsuario,
+                u.UsuPersonaId,
+                r.RolNom
+            FROM usuarios u
+            LEFT JOIN usuarios_roles ur ON ur.UsuarioId = u.IdUsuarios
+            LEFT JOIN roles r          ON r.IdRol      = ur.RolId
+            WHERE u.UsuUser = ?
+            LIMIT 1";
 
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) j_err('Error interno al preparar consulta', 500);
+
+    $stmt->bind_param("s", $user);
+    $stmt->execute();
+    $res = $stmt->get_result();
+
+    if ($res->num_rows === 0) j_err('Usuario no existe', 401);
+    $row = $res->fetch_assoc();
+
+    if ($row['EstadoUsuario'] !== 'ACTIVO') j_err('Usuario inactivo', 403);
+    if ($pass !== $row['UsuContra']) j_err('Contraseña incorrecta', 401);
+
+    $rol = $row['RolNom'] ?? null;
+    if ($rol !== null) $rol = trim($rol);
+
+    if ($rol === null || $rol === '') {
+        if ((int)$row['IdUsuarios'] === 1) {
+            $rol = 'ADMINISTRADOR';
+        } else {
+            $rol = 'USUARIO';
+        }
+    }
+
+    $token = base64_encode($row['IdUsuarios'].'|'.time());
+
+    j_ok([
+      "token" => $token,
+      "user"  => [
+        "id"        => (int)$row['IdUsuarios'],
+        "username"  => $row['UsuUser'],
+        "personaId" => $row['UsuPersonaId'] ? (int)$row['UsuPersonaId'] : null,
+        "rol"       => $rol
+      ]
+    ]);
+    break;
+
+
+  /* ===========================================
+   *  REGISTRO (usuario + persona vinculada)
+   * =========================================== */
+  case 'register':
+    $user  = s($input['username'] ?? '');
+    $pass  = s($input['password'] ?? '');
+    $email = s($input['email'] ?? ''); 
+
+    if ($user === '' || $pass === '') {
+      j_err('Faltan datos para registro');
+    }
+
+    // 1) Verificar si el usuario ya existe
+    $stmt = $conn->prepare("SELECT IdUsuarios FROM usuarios WHERE UsuUser = ? LIMIT 1");
+    if (!$stmt) {
+        j_err('Error interno al preparar consulta', 500);
+    }
+    $stmt->bind_param("s", $user);
+    $stmt->execute();
+    $stmt->store_result();
+
+    if ($stmt->num_rows > 0) {
+      j_err('El usuario ya existee jajaj', 409);
+    }
+
+    // 2) Insertar el usuario
+    $ins = $conn->prepare(
+      "INSERT INTO usuarios (UsuUser, UsuContra, EstadoUsuario) 
+       VALUES (?, ?, 'ACTIVO')"
+    );
+    if (!$ins) {
+        j_err('Error interno al preparar inserción', 500);
+    }
+    $ins->bind_param("ss", $user, $pass);
+
+    if (!$ins->execute()) {
+        j_err('No se pudo registrar el usuario', 500);
+    }
+
+    $idUsuario = $ins->insert_id;
+
+    // 3) Crear registro en PERSONAS asociado
+    // Por ahora se usa el username como nombre, y dejamos apellidos/doc vacíos.
+    $fecha = date("Y-m-d");
+    $hora  = date("H:i:s");
+    $nomPersona  = $user;
+    $apePersona  = '';
+    $docPersona  = '';
+
+    $pstmt = $conn->prepare(
+        "INSERT INTO personas (PerNom, PerApe, PerNumDoc, PerFechareg, PerHorareg, EstadoPersona)
+         VALUES (?, ?, ?, ?, ?, 'ACTIVO')"
+    );
+    if (!$pstmt) {
+        j_err('Error interno al crear persona', 500);
+    }
+    $pstmt->bind_param("sssss", $nomPersona, $apePersona, $docPersona, $fecha, $hora);
+
+    if (!$pstmt->execute()) {
+        j_err('Usuario creado, pero error creando persona', 500);
+    }
+
+    $idPersona = $pstmt->insert_id;
+
+    // 4) Actualizar el usuario con el IdPersona
+    $upd = $conn->prepare(
+        "UPDATE usuarios SET UsuPersonaId = ? WHERE IdUsuarios = ?"
+    );
+    if ($upd) {
+        $upd->bind_param("ii", $idPersona, $idUsuario);
+        $upd->execute();
+    }
+
+    j_ok([
+      "msg"        => "Usuario y persona registrados correctamente",
+      "idUsuario"  => $idUsuario,
+      "idPersona"  => $idPersona
+    ]);
+    break;
+
+
+  /* ===========================================
+   *  RECUPERAR CONTRASEÑA
+   * =========================================== */
+  case 'recover':
+    $user = s($input['username'] ?? '');
+    $new  = s($input['new_password'] ?? '');
+    if ($user === '' || $new === '') j_err('Faltan datos');
+
+    $upd = $conn->prepare("UPDATE usuarios SET UsuContra=? WHERE UsuUser=?");
+    if (!$upd) {
+        j_err('Error interno al preparar actualización', 500);
+    }
+    $upd->bind_param("ss", $new, $user);
+    $upd->execute();
+
+    if ($upd->affected_rows > 0) j_ok(["msg" => "Contraseña actualizada"]);
+    j_err('Usuario no encontrado', 404);
+    break;
+
+
+  /* ===========================================
+   *  CRUD PERSONAS - LIST
+   * =========================================== */
+  case 'personas_list':
         $sql = "SELECT 
-                    u.IdUsuarios,
-                    u.UsuUser,
-                    u.UsuContra,
-                    u.EstadoUsuario,
-                    u.UsuPersonaId,
-                    r.RolNom
-                FROM usuarios u
-                LEFT JOIN usuarios_roles ur ON ur.UsuarioId = u.IdUsuarios
-                LEFT JOIN roles r          ON r.IdRol      = ur.RolId
-                WHERE u.UsuUser = ?
-                LIMIT 1";
+                    IdPersona    AS id,
+                    PerNom       AS nombres,
+                    PerApe       AS apellidos,
+                    PerNumDoc    AS documento,
+                    PerFechareg  AS fecha
+                FROM personas
+                ORDER BY IdPersona DESC";
 
-        $stmt = $conn->prepare($sql);
-        $stmt->bind_param("s", $user);
-        $stmt->execute();
-        $res = $stmt->get_result();
-
-        if ($res->num_rows===0) j_err("Usuario no existe", 401);
-        $row = $res->fetch_assoc();
-
-        if ($row['EstadoUsuario']!=='ACTIVO') j_err("Usuario inactivo", 403);
-        if ($pass!==$row['UsuContra']) j_err("Contraseña incorrecta", 401);
-
-        // Rol por fallback
-        $rol = $row['RolNom'] ?? '';
-        if (!$rol) {
-            $rol = ($row['IdUsuarios']==1) ? 'ADMINISTRADOR' : 'USUARIO';
+        $res = $conn->query($sql);
+        if (!$res) {
+            j_err("Error en consulta: " . $conn->error, 500);
         }
 
-        j_ok([
-            "token" => base64_encode($row['IdUsuarios']."|".time()),
-            "user" => [
-                "id"        => (int)$row['IdUsuarios'],
-                "username"  => $row['UsuUser'],
-                "personaId" => $row['UsuPersonaId'] ? (int)$row['UsuPersonaId'] : null,
-                "rol"       => $rol
-            ]
-        ]);
-    break;
+        $list = [];
+        while ($row = $res->fetch_assoc()) {
+            $list[] = $row;
+        }
 
-
-    /* ============================================
-     * REGISTRO
-     * ============================================ */
-    case 'register':
-        $user = s($input['username'] ?? '');
-        $pass = s($input['password'] ?? '');
-        $nombre = s($input['nombre'] ?? '');
-        $apellido = s($input['apellido'] ?? '');
-        $documento = s($input['documento'] ?? '');
-
-        if ($user==='' || $pass==='') j_err("Faltan datos para registro");
-
-        // Verificar duplicado
-        $stmt = $conn->prepare("SELECT IdUsuarios FROM usuarios WHERE UsuUser=? LIMIT 1");
-        $stmt->bind_param("s", $user);
-        $stmt->execute();
-        $stmt->store_result();
-        if ($stmt->num_rows>0) j_err("El usuario ya existe", 409);
-
-        // 1️⃣ Crear persona
-        $fecha = date("Y-m-d");
-        $hora = date("H:i:s");
-
-        $stmt = $conn->prepare(
-            "INSERT INTO personas(PerNom, PerApe, PerNumDoc, PerFechareg, PerHorareg, EstadoPersona)
-             VALUES (?, ?, ?, ?, ?, 'ACTIVO')"
-        );
-        $stmt->bind_param("sssss", $nombre, $apellido, $documento, $fecha, $hora);
-        if(!$stmt->execute()) j_err("Error creando persona");
-
-        $personaId = $stmt->insert_id;
-
-        // 2️⃣ Crear usuario
-        $ins = $conn->prepare(
-            "INSERT INTO usuarios(UsuUser, UsuContra, EstadoUsuario, UsuPersonaId)
-             VALUES (?, ?, 'ACTIVO', ?)"
-        );
-        $ins->bind_param("ssi", $user, $pass, $personaId);
-        $ins->execute();
-
-        j_ok(["msg"=>"Usuario registrado con persona asociada"]);
-    break;
-
-
-    /* ============================================
-     * RECUPERAR
-     * ============================================ */
-    case 'recover':
-        $user = s($input['username'] ?? '');
-        $new  = s($input['new_password'] ?? '');
-        if ($user==='' || $new==='') j_err('Faltan datos');
-
-        $upd = $conn->prepare("UPDATE usuarios SET UsuContra=? WHERE UsuUser=?");
-        $upd->bind_param("ss", $new, $user);
-        $upd->execute();
-
-        if ($upd->affected_rows>0) j_ok(["msg"=>"Contraseña actualizada"]);
-        j_err("Usuario no encontrado", 404);
-    break;
-
-
-    /* ======================================================
-     * CRUD PERSONAS (compatibles con tu PersonasActivity.kt)
-     * ====================================================== */
-
-    /* ---------- LIST ---------- */
-    case 'personas_list':
-        $res = $conn->query(
-            "SELECT 
-                IdPersona AS id,
-                PerNom AS nombres,
-                PerApe AS apellidos,
-                PerNumDoc AS documento,
-                PerFechareg AS fecha
-            FROM personas
-            ORDER BY IdPersona DESC"
-        );
-
-        $arr = [];
-        while($row=$res->fetch_assoc()) $arr[]=$row;
-
-        // La app quiere SOLO un array, nada más
-        echo json_encode($arr, JSON_UNESCAPED_UNICODE);
+        echo json_encode($list, JSON_UNESCAPED_UNICODE);
         exit;
 
-    /* ---------- CREATE ---------- */
-    case 'personas_create':
-        $n = s($input['nombres'] ?? '');
-        $a = s($input['apellidos'] ?? '');
-        $d = s($input['documento'] ?? '');
-        if ($n==='' || $a==='' || $d==='') j_err("Campos obligatorios");
+  /* ===========================================
+   *  CRUD PERSONAS - CREATE
+   * =========================================== */
+  case 'personas_create':
+        $nombres   = s($input['nombres'] ?? '');
+        $apellidos = s($input['apellidos'] ?? '');
+        $documento = s($input['documento'] ?? '');
+        $fecha     = s($input['fecha'] ?? date("Y-m-d"));
+        $hora      = date("H:i:s");
 
-        $fecha = date("Y-m-d");
-        $hora = date("H:i:s");
+        if ($nombres === '' || $apellidos === '' || $documento === '') {
+            j_err("Todos los campos son obligatorios");
+        }
 
         $stmt = $conn->prepare(
-            "INSERT INTO personas(PerNom, PerApe, PerNumDoc, PerFechareg, PerHorareg, EstadoPersona)
+            "INSERT INTO personas (PerNom, PerApe, PerNumDoc, PerFechareg, PerHorareg, EstadoPersona)
              VALUES (?, ?, ?, ?, ?, 'ACTIVO')"
         );
-        $stmt->bind_param("sssss", $n, $a, $d, $fecha, $hora);
-        $stmt->execute();
+        if (!$stmt) j_err("Error en prepare(): " . $conn->error, 500);
 
-        j_ok(["msg"=>"Persona creada"]);
-    break;
+        $stmt->bind_param("sssss", $nombres, $apellidos, $documento, $fecha, $hora);
 
-    /* ---------- UPDATE ---------- */
-    case 'personas_update':
-        if ($id===0) j_err("ID inválido");
+        if ($stmt->execute()) {
+            j_ok(["msg" => "Persona creada", "id" => $stmt->insert_id]);
+        }
 
-        $n = s($input['nombres'] ?? '');
-        $a = s($input['apellidos'] ?? '');
-        $d = s($input['documento'] ?? '');
+        j_err("No se pudo crear persona", 500);
+        break;
+
+  /* ===========================================
+   *  CRUD PERSONAS - UPDATE
+   * =========================================== */
+  case 'personas_update':
+        if ($id === 0) j_err("ID inválido");
+
+        $nombres   = s($input['nombres'] ?? '');
+        $apellidos = s($input['apellidos'] ?? '');
+        $documento = s($input['documento'] ?? '');
+        $fecha     = s($input['fecha'] ?? date("Y-m-d"));
 
         $stmt = $conn->prepare(
-            "UPDATE personas
-             SET PerNom=?, PerApe=?, PerNumDoc=?
-             WHERE IdPersona=?"
+            "UPDATE personas 
+             SET PerNom = ?, PerApe = ?, PerNumDoc = ?, PerFechareg = ?
+             WHERE IdPersona = ?"
         );
-        $stmt->bind_param("sssi", $n, $a, $d, $id);
+        if (!$stmt) j_err("Error en prepare(): " . $conn->error, 500);
+
+        $stmt->bind_param("ssssi", $nombres, $apellidos, $documento, $fecha, $id);
         $stmt->execute();
 
-        j_ok(["msg"=>"Persona actualizada"]);
-    break;
+        if ($stmt->affected_rows > 0) {
+            j_ok(["msg" => "Persona actualizada"]);
+        }
 
-    /* ---------- DELETE ---------- */
-    case 'personas_delete':
-        if ($id===0) j_err("ID inválido");
+        j_err("No se pudo actualizar persona", 500);
+        break;
 
-        $stmt = $conn->prepare("DELETE FROM personas WHERE IdPersona=?");
+  /* ===========================================
+   *  CRUD PERSONAS - DELETE
+   * =========================================== */
+  case 'personas_delete':
+        if ($id === 0) j_err("ID inválido");
+
+        $stmt = $conn->prepare("DELETE FROM personas WHERE IdPersona = ?");
+        if (!$stmt) j_err("Error en prepare(): " . $conn->error, 500);
+
         $stmt->bind_param("i", $id);
         $stmt->execute();
 
-        j_ok(["msg"=>"Persona eliminada"]);
-    break;
+        if ($stmt->affected_rows > 0) {
+            j_ok(["msg" => "Persona eliminada"]);
+        }
 
+        j_err("No se pudo eliminar persona", 500);
+        break;
 
-
-    /* ============================================
-     * DEFAULT
-     * ============================================ */
-    default:
-        j_err("Acción no soportada");
+  /* ===========================================
+   *  DEFAULT
+   * =========================================== */
+  default:
+    j_err('Acción no soportada. Usa action=login | register | recover | personas_*', 404);
 }
 ?>
